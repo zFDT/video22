@@ -118,20 +118,21 @@ class XhsCollector(BaseCollector):
                     cover_el = item.ele("css:img", timeout=1)
                     cover_url = cover_el.attr("src") if cover_el else ""
 
-                    # 获取笔记详情页内容
-                    note_url = f"https://www.xiaohongshu.com{href}" if href and not href.startswith("http") else href
-                    detail_content = ""
-                    detail_images = []
-
-                    if note_url and len(results) < limit:
-                        detail_content, detail_images = self._get_note_detail(note_url)
+                    note_url = ""
+                    if href:
+                        if href.startswith("http"):
+                            note_url = href
+                        elif href.startswith("/"):
+                            note_url = f"https://www.xiaohongshu.com{href}"
+                        else:
+                            note_url = f"https://www.xiaohongshu.com/{href}"
 
                     results.append({
                         "id": href.split("/")[-1] if href else "",
                         "title": title,
-                        "desc": detail_content or title,
+                        "desc": title,
                         "liked_count": self._parse_count(likes_text),
-                        "image_list": detail_images or ([cover_url] if cover_url else []),
+                        "image_list": [cover_url] if cover_url else [],
                         "user": author,
                         "source_url": note_url,
                     })
@@ -142,33 +143,6 @@ class XhsCollector(BaseCollector):
             logger.error(f"XHS search error: {e}")
 
         return results
-
-    def _get_note_detail(self, url: str) -> tuple[str, list[str]]:
-        """进入笔记详情页获取完整正文和所有图片"""
-        content = ""
-        images = []
-        try:
-            # 在新标签页打开详情
-            tab = self._page.new_tab(url)
-            time.sleep(3)
-            self._wait_for_page_ready()
-
-            # 获取正文
-            desc_el = tab.ele("css:.note-text", timeout=3) or tab.ele("css:#detail-desc", timeout=2) or tab.ele("css:[class*='content']", timeout=2)
-            if desc_el:
-                content = desc_el.text
-
-            # 获取所有图片
-            img_els = tab.eles("css:.note-image img", timeout=2) or tab.eles("css:.carousel img", timeout=2)
-            for img in img_els:
-                src = img.attr("src")
-                if src and "xhscdn" in src:
-                    images.append(src)
-
-            tab.close()
-        except Exception as e:
-            logger.debug(f"Error getting note detail: {e}")
-        return content, images
 
     def _parse_count(self, text: str) -> int:
         text = text.strip()
