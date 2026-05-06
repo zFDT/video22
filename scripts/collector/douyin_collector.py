@@ -1,86 +1,117 @@
-"""抖音采集器 - 通过公开接口获取抖音热门视频"""
+"""抖音采集器 - 基于 DrissionPage 浏览器自动化"""
 
 import logging
-import httpx
+import time
+import re
 from pathlib import Path
 
 from .base_collector import BaseCollector, MaterialItem
 
 logger = logging.getLogger(__name__)
 
-DOUYIN_SEARCH_API = "https://www.douyin.com/aweme/v1/web/search/item/"
-DOUYIN_HOT_API = "https://www.douyin.com/aweme/v1/web/hot/search/list/"
+try:
+    from DrissionPage import ChromiumPage, ChromiumOptions
+    DRISSION_AVAILABLE = True
+except ImportError:
+    DRISSION_AVAILABLE = False
+    logger.warning("DrissionPage not installed. Run: pip install DrissionPage")
 
 
 class DouyinCollector(BaseCollector):
     def get_platform_name(self) -> str:
         return "douyin"
 
-    def _get_headers(self) -> dict:
+    def _create_browser(self) -> "ChromiumPage":
+        co = ChromiumOptions()
+        co.set_argument("--disable-blink-features=AutomationControlled")
+        co.set_argument("--no-first-run")
         cookie = self.platform_config.get("cookie", "")
-        return {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Cookie": cookie,
-            "Referer": "https://www.douyin.com/",
-        }
+        page = ChromiumPage(co)
+        if cookie:
+            for item in cookie.split("; "):
+                if "=" in item:
+                    name, value = item.split("=", 1)
+                    page.set.cookies({"name": name.strip(), "value": value.strip(), "domain": ".douyin.com"})
+        return page
 
     async def search(self, keywords: list[str], limit: int = 20) -> list[dict]:
+        if not DRISSION_AVAILABLE:
+            logger.error("DrissionPage not available")
+            return []
+
         keyword = " ".join(keywords)
-        headers = self._get_headers()
-
-        if not self.platform_config.get("cookie"):
-            logger.warning("Douyin cookie not configured, using hot search fallback")
-            return await self._hot_search_fallback(keyword, limit)
-
-        params = {
-            "keyword": keyword,
-            "search_channel": "aweme_general",
-            "sort_type": 0,
-            "publish_time": 0,
-            "count": min(limit, 20),
-            "offset": 0,
-        }
-
         results = []
+
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(DOUYIN_SEARCH_API, headers=headers, params=params)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    aweme_list = data.get("data", [])
-                    for aweme in aweme_list:
-                        info = aweme.get("aweme_info", {})
-                        if info:
-                            results.append({
-                                "aweme_id": info.get("aweme_id", ""),
-                                "desc": info.get("desc", ""),
-                                "statistics": info.get("statistics", {}),
-                                "video_cover": info.get("video", {}).get("cover", {}).get("url_list", [None])[0],
-                                "video_play_url": info.get("video", {}).get("play_addr", {}).get("url_list", [None])[0],
-                                "author": info.get("author", {}).get("nickname", ""),
-                                "duration": info.get("video", {}).get("duration", 0),
-                            })
-                else:
-                    logger.error(f"Douyin search failed: {resp.status_code}")
+            page = self._create_browser()
+            search_url = f"https://www.douyin.com/search/{keyword}?type=video"
+            page.get(search_url)
+            time.sleep(4)
+
+            # 滚动加载更多
+            scroll_count = min(limit // 5 + 1, 5)
+            for i in range(scroll_count):
+                page.scroll.to_bottom()
+                time.sleep(2)
+
+            # 解析视频卡片
+            video_cards = page.eles("css:[data-e2e='scroll-list'] > div", timeout=5)
+            if not video_cards:
+                video_cards = page.eles("css:.search-result-card", timeout=3)
+
+            logger.info(f"Found {len(video_cards)} video cards for '{keyword}'")
+
+            for card in video_cards[:limit]:
+                try:
+                    title_el = card.ele("css:a[title]", timeout=1) or card.ele("css:.title", timeout=1)
+                    title = title_el.attr("title") or title_el.text if title_el else ""
+
+                    author_el = card.ele("css:.author-card-user-name", timeout=1) or card.ele("css:[data-e2e='search-card-user-name']", timeout=1)
+                    author = author_el.text if author_el else ""
+
+                    likes_el = card.ele("css:[data-e2e='search-like-count']", timeout=1) or card.ele("css:.like-count", timeout=1)
+                    likes_text = likes_el.text if likes_el else "0"
+
+                    link_el = card.ele("css:a[href*='/video/']", timeout=1)
+                    href = link_el.attr("href") if link_el else ""
+
+                    cover_el = card.ele("css:img[src*='image']", timeout=1)
+                    cover_url = cover_el.attr("src") if cover_el else ""
+
+                    results.append({
+                        "aweme_id": self._extract_video_id(href),
+                        "desc": title,
+                        "statistics": {"digg_count": self._parse_count(likes_text)},
+                        "video_cover": cover_url,
+                        "author": author,
+                        "source_url": href if href.startswith("http") else f"https://www.douyin.com{href}" if href else "",
+                    })
+                except Exception as e:
+                    logger.debug(f"Error parsing video card: {e}")
+                    continue
+
+            page.quit()
         except Exception as e:
-            logger.error(f"Douyin search error: {e}")
+            logger.error(f"Douyin DrissionPage search error: {e}")
 
         return results
 
-    async def _hot_search_fallback(self, keyword: str, limit: int) -> list[dict]:
-        """Fallback: use Douyin hot search API (public)"""
-        logger.info(f"Using hot search fallback for: {keyword}")
+    def _extract_video_id(self, url: str) -> str:
+        match = re.search(r"/video/(\d+)", url)
+        return match.group(1) if match else ""
+
+    def _parse_count(self, text: str) -> int:
+        text = text.strip()
+        if not text:
+            return 0
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(DOUYIN_HOT_API, headers=self._get_headers())
-                if resp.status_code == 200:
-                    data = resp.json()
-                    word_list = data.get("data", {}).get("word_list", [])
-                    matched = [w for w in word_list if keyword.lower() in w.get("word", "").lower()]
-                    return [{"desc": w.get("word", ""), "hot_value": w.get("hot_value", 0)} for w in matched[:limit]]
-        except Exception as e:
-            logger.error(f"Douyin hot search fallback error: {e}")
-        return []
+            if "万" in text:
+                return int(float(text.replace("万", "")) * 10000)
+            if "w" in text.lower():
+                return int(float(text.lower().replace("w", "")) * 10000)
+            return int(text.replace("+", "").replace(",", ""))
+        except (ValueError, TypeError):
+            return 0
 
     def parse_result(self, raw: dict, topic_name: str) -> MaterialItem | None:
         desc = raw.get("desc", "")
@@ -89,12 +120,6 @@ class DouyinCollector(BaseCollector):
 
         aweme_id = raw.get("aweme_id", "")
         stats = raw.get("statistics", {})
-        media_urls = []
-
-        if raw.get("video_play_url"):
-            media_urls.append(raw["video_play_url"])
-        if raw.get("video_cover"):
-            media_urls.append(raw["video_cover"])
 
         return MaterialItem(
             id="",
@@ -102,14 +127,11 @@ class DouyinCollector(BaseCollector):
             topic=topic_name,
             title=desc[:50] if len(desc) > 50 else desc,
             content=desc,
-            media_urls=media_urls,
+            media_urls=[raw.get("video_cover", "")] if raw.get("video_cover") else [],
             media_type="video",
             metrics={
                 "likes": stats.get("digg_count", 0),
-                "comments": stats.get("comment_count", 0),
-                "shares": stats.get("share_count", 0),
-                "plays": stats.get("play_count", 0),
                 "author": raw.get("author", ""),
             },
-            source_url=f"https://www.douyin.com/video/{aweme_id}" if aweme_id else "",
+            source_url=raw.get("source_url", ""),
         )
