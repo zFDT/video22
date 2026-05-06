@@ -1,0 +1,30 @@
+{
+  "xhs": {
+    "enabled": true,
+    "auth_type": "cookie",
+    "cookie": "",
+    "cookies_json": "path/to/your/xiaohongshu/cookies.json",
+    "login_tool": "path/to/xiaohongshu-login-windows-amd64.exe",
+    "base_url": "https://www.xiaohongshu.com",
+    "rate_limit_seconds": 3,
+    "max_retries": 3
+  },
+  "douyin": {
+    "enabled": true,
+    "auth_type": "cookie",
+    "cookie": "",
+    "cookies_json": "",
+    "login_tool": "",
+    "base_url": "https://www.douyin.com",
+    "rate_limit_seconds": 5,
+    "max_retries": 3
+  },
+  "weibo": {
+    "enabled": true,
+    "auth_type": "public",
+    "cookie": "",
+    "base_url": "https://weibo.com",
+    "rate_limit_seconds": 2,
+    "max_retries": 3
+  }
+}

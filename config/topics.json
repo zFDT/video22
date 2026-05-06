@@ -1,0 +1,28 @@
+{
+  "topics": [
+    {
+      "name": "FDM 3D打印",
+      "slug": "fdm_3d_printing",
+      "keywords": ["FDM", "3D打印", "FDM打印", "3D打印机", "耗材", "PLA", "PETG", "打印失败"],
+      "platforms": ["xhs", "douyin", "weibo"]
+    },
+    {
+      "name": "原子重塑",
+      "slug": "atomic_reshaping",
+      "keywords": ["原子重塑", "AtomForm"],
+      "platforms": ["xhs", "douyin", "weibo"]
+    },
+    {
+      "name": "dreame",
+      "slug": "dreame",
+      "keywords": ["dreame", "追觅", "追觅科技"],
+      "platforms": ["xhs", "douyin", "weibo"]
+    }
+  ],
+  "collection": {
+    "max_items_per_topic": 20,
+    "time_range_days": 7,
+    "sort_by": "hot",
+    "min_likes": 100
+  }
+}

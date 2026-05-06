@@ -1,0 +1,39 @@
+# 依赖
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 敏感信息
+config/platforms.json
+config/douyin_cookies.json
+*.cookies.json
+
+# 日志
+logs/*.log
+
+# 采集的原始数据（体积大，不入库）
+materials/raw/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# Skills 相关
+.agents/
+skills-lock.json
+node_modules/
