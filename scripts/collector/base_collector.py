@@ -3,6 +3,7 @@
 import json
 import hashlib
 import time
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -117,7 +118,7 @@ class BaseCollector(ABC):
                     item = self.parse_result(raw, topic_name)
                     if item:
                         all_items.append(item)
-                time.sleep(rate_limit)
+                await asyncio.sleep(rate_limit)
             except Exception as e:
                 logger.error(f"Error collecting '{keyword}' from {self.platform_name}: {e}")
 

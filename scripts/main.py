@@ -60,7 +60,7 @@ def init_browsers(config_dir: Path) -> tuple:
 
 
 async def run_collection(config_dir: Path, output_base: Path, xhs_page, douyin_page, topic_filter: str | None = None):
-    """Phase 1: 多平台素材采集（复用已登录的浏览器实例）"""
+    """Phase 1: 多平台素材采集（小红书和抖音并行）"""
     logger.info("=== Phase 1: Content Collection ===")
 
     topics_config = json.loads((config_dir / "topics.json").read_text(encoding="utf-8"))
@@ -72,21 +72,40 @@ async def run_collection(config_dir: Path, output_base: Path, xhs_page, douyin_p
 
     xhs_collector = XhsCollector(config_dir, page=xhs_page)
     douyin_collector = DouyinCollector(config_dir, page=douyin_page)
-    collectors = [xhs_collector, douyin_collector]
 
     total_collected = 0
     for topic in topics:
         logger.info(f"Collecting for topic: {topic['name']}")
-        for collector in collectors:
-            try:
-                items = await collector.collect(topic, limit=collection_config["max_items_per_topic"])
-                if items:
-                    output_dir = output_base / collector.get_platform_name()
-                    collector.save_results(items, output_dir)
-                    total_collected += len(items)
-                    logger.info(f"  {collector.get_platform_name()}: {len(items)} items")
-            except Exception as e:
-                logger.error(f"  {collector.get_platform_name()} failed: {e}")
+        limit = collection_config["max_items_per_topic"]
+
+        # 小红书和抖音并行采集同一话题
+        xhs_task = asyncio.create_task(_collect_one(xhs_collector, topic, limit, output_base))
+        douyin_task = asyncio.create_task(_collect_one(douyin_collector, topic, limit, output_base))
+
+        results = await asyncio.gather(xhs_task, douyin_task, return_exceptions=True)
+
+        for r in results:
+            if isinstance(r, int):
+                total_collected += r
+            elif isinstance(r, Exception):
+                logger.error(f"  Collector error: {r}")
+
+    logger.info(f"Collection complete. Total: {total_collected} items")
+    return total_collected
+
+
+async def _collect_one(collector, topic: dict, limit: int, output_base: Path) -> int:
+    """单个采集器的采集任务"""
+    try:
+        items = await collector.collect(topic, limit=limit)
+        if items:
+            output_dir = output_base / collector.get_platform_name()
+            collector.save_results(items, output_dir)
+            logger.info(f"  {collector.get_platform_name()}: {len(items)} items")
+            return len(items)
+    except Exception as e:
+        logger.error(f"  {collector.get_platform_name()} failed: {e}")
+    return 0
 
     logger.info(f"Collection complete. Total: {total_collected} items")
     return total_collected
