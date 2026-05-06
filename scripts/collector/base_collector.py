@@ -142,4 +142,43 @@ class BaseCollector(ABC):
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         logger.info(f"Saved {len(items)} items to {filepath}")
+
+        # 下载媒体文件到本地
+        media_dir = output_dir / f"{self.platform_name}_{timestamp}_media"
+        self._download_media(items, media_dir)
+
         return filepath
+
+    def _download_media(self, items: list[MaterialItem], media_dir: Path):
+        """下载所有素材的图片/视频到本地"""
+        import httpx
+
+        if not any(item.media_urls for item in items):
+            return
+
+        media_dir.mkdir(parents=True, exist_ok=True)
+        downloaded = 0
+
+        with httpx.Client(timeout=30, follow_redirects=True) as client:
+            for i, item in enumerate(items):
+                for j, url in enumerate(item.media_urls):
+                    if not url or not url.startswith("http"):
+                        continue
+                    try:
+                        ext = ".jpg" if item.media_type == "image" else ".mp4"
+                        if ".webp" in url:
+                            ext = ".webp"
+                        elif ".png" in url:
+                            ext = ".png"
+
+                        filename = f"{i:03d}_{j:02d}{ext}"
+                        filepath = media_dir / filename
+                        resp = client.get(url)
+                        if resp.status_code == 200:
+                            filepath.write_bytes(resp.content)
+                            downloaded += 1
+                    except Exception as e:
+                        logger.debug(f"Failed to download {url[:60]}: {e}")
+
+        if downloaded:
+            logger.info(f"Downloaded {downloaded} media files to {media_dir}")

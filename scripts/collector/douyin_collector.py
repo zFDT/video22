@@ -1,4 +1,4 @@
-"""抖音采集器 - 单浏览器实例复用，流程开始时登录一次"""
+"""抖音采集器 - 单浏览器实例复用，支持验证码等待"""
 
 import logging
 import time
@@ -17,6 +17,7 @@ except ImportError:
     logger.warning("DrissionPage not installed. Run: pip install DrissionPage")
 
 DOUYIN_BROWSER_DATA = BROWSER_DATA_DIR / "douyin"
+DOUYIN_PORT = 9512
 
 
 class DouyinCollector(BaseCollector):
@@ -28,14 +29,14 @@ class DouyinCollector(BaseCollector):
         return "douyin"
 
     def set_page(self, page: "ChromiumPage"):
-        """注入已登录的浏览器实例"""
         self._page = page
 
     @staticmethod
     def create_browser() -> "ChromiumPage":
-        """创建浏览器实例（持久化用户数据目录）"""
+        """创建独立的浏览器实例（固定端口 9512，与小红书隔离）"""
         co = ChromiumOptions()
         co.set_user_data_path(str(DOUYIN_BROWSER_DATA))
+        co.set_local_port(DOUYIN_PORT)
         co.set_argument("--disable-blink-features=AutomationControlled")
         co.set_argument("--no-first-run")
         co.set_argument("--no-default-browser-check")
@@ -43,16 +44,41 @@ class DouyinCollector(BaseCollector):
 
     @staticmethod
     def wait_for_login(page: "ChromiumPage") -> bool:
-        """打开抖音首页，等待用户确认已登录"""
+        """打开抖音首页，检测登录状态"""
         page.get("https://www.douyin.com")
         time.sleep(3)
         avatar = page.ele("css:[class*='avatar']", timeout=3)
         if avatar:
-            logger.info("Douyin: already logged in (session from previous run)")
+            logger.info("Douyin: 已登录（复用上次 session）")
             return True
-        logger.info("Douyin: waiting for login... please log in in the browser window")
-        input(">>> 请在浏览器中登录抖音，完成后按回车继续...")
+        logger.info("Douyin: 需要登录，请在浏览器中完成登录")
+        input(">>> 抖音登录完成后，按回车继续...")
         return True
+
+    def _wait_for_page_ready(self):
+        """等待页面加载，遇到验证码/机器人检测时暂停等待用户处理"""
+        time.sleep(3)
+        captcha_signs = [
+            "css:#captcha-verify-image",
+            "css:.captcha_verify_container",
+            "css:[class*='verify']",
+            "css:[class*='captcha']",
+            "css:.secsdk-captcha-drag-icon",
+        ]
+        for selector in captcha_signs:
+            el = self._page.ele(selector, timeout=1)
+            if el:
+                logger.warning("⚠️  检测到机器人验证，请在浏览器中完成验证")
+                input(">>> 验证完成后按回车继续...")
+                time.sleep(2)
+                return
+
+        # 检测"请完成验证"文字
+        verify_text = self._page.ele("text:请完成验证", timeout=1) or self._page.ele("text:验证码", timeout=1)
+        if verify_text:
+            logger.warning("⚠️  检测到验证提示，请在浏览器中完成")
+            input(">>> 验证完成后按回车继续...")
+            time.sleep(2)
 
     async def search(self, keywords: list[str], limit: int = 20) -> list[dict]:
         if not DRISSION_AVAILABLE or not self._page:
@@ -65,20 +91,28 @@ class DouyinCollector(BaseCollector):
         try:
             search_url = f"https://www.douyin.com/search/{keyword}?type=video"
             self._page.get(search_url)
-            time.sleep(4)
+            self._wait_for_page_ready()
+
+            # 等待搜索结果加载
+            time.sleep(3)
 
             # 滚动加载更多
-            scroll_count = min(limit // 5 + 1, 5)
+            scroll_count = min(limit // 5 + 1, 3)
             for i in range(scroll_count):
                 self._page.scroll.to_bottom()
                 time.sleep(2)
+                # 每次滚动后检查验证码
+                self._wait_for_page_ready()
 
-            # 解析视频卡片 - 多种选择器兼容
+            # 解析视频卡片 - 多种选择器兼容抖音页面变化
             video_cards = self._page.eles("css:[data-e2e='scroll-list'] > div", timeout=5)
             if not video_cards:
                 video_cards = self._page.eles("css:.search-result-card", timeout=3)
             if not video_cards:
                 video_cards = self._page.eles("css:li[class*='video']", timeout=3)
+            if not video_cards:
+                # 最后尝试通用选择器
+                video_cards = self._page.eles("css:div[class*='search'] a[href*='/video/']", timeout=3)
 
             logger.info(f"Found {len(video_cards)} video cards for '{keyword}'")
 

@@ -1,7 +1,8 @@
-"""小红书采集器 - 单浏览器实例复用，流程开始时登录一次"""
+"""小红书采集器 - 单浏览器实例复用，支持验证码等待和内容下载"""
 
 import logging
 import time
+import httpx
 from pathlib import Path
 
 from .base_collector import BaseCollector, MaterialItem, BROWSER_DATA_DIR
@@ -16,6 +17,7 @@ except ImportError:
     logger.warning("DrissionPage not installed. Run: pip install DrissionPage")
 
 XHS_BROWSER_DATA = BROWSER_DATA_DIR / "xhs"
+XHS_PORT = 9511
 
 
 class XhsCollector(BaseCollector):
@@ -27,14 +29,14 @@ class XhsCollector(BaseCollector):
         return "xhs"
 
     def set_page(self, page: "ChromiumPage"):
-        """注入已登录的浏览器实例"""
         self._page = page
 
     @staticmethod
     def create_browser() -> "ChromiumPage":
-        """创建浏览器实例（持久化用户数据目录）"""
+        """创建独立的浏览器实例（固定端口 9511，与抖音隔离）"""
         co = ChromiumOptions()
         co.set_user_data_path(str(XHS_BROWSER_DATA))
+        co.set_local_port(XHS_PORT)
         co.set_argument("--disable-blink-features=AutomationControlled")
         co.set_argument("--no-first-run")
         co.set_argument("--no-default-browser-check")
@@ -42,17 +44,39 @@ class XhsCollector(BaseCollector):
 
     @staticmethod
     def wait_for_login(page: "ChromiumPage") -> bool:
-        """打开小红书首页，等待用户确认已登录"""
+        """打开小红书首页，检测登录状态"""
         page.get("https://www.xiaohongshu.com")
-        time.sleep(2)
-        # 检查是否已登录（有用户头像元素）
+        time.sleep(3)
         avatar = page.ele("css:.user-avatar", timeout=3) or page.ele("css:[class*='avatar']", timeout=2)
         if avatar:
-            logger.info("XHS: already logged in (session from previous run)")
+            logger.info("XHS: 已登录（复用上次 session）")
             return True
-        logger.info("XHS: waiting for login... please log in in the browser window")
-        input(">>> 请在浏览器中登录小红书，完成后按回车继续...")
+        logger.info("XHS: 需要登录，请在浏览器中完成登录")
+        input(">>> 小红书登录完成后，按回车继续...")
         return True
+
+    def _wait_for_page_ready(self):
+        """等待页面加载完成，如果遇到验证码则暂停等待用户处理"""
+        time.sleep(2)
+        # 检测常见的验证码/风控页面
+        captcha_signs = [
+            "css:.captcha-container",
+            "css:#captcha",
+            "css:[class*='verify']",
+            "css:[class*='captcha']",
+        ]
+        for selector in captcha_signs:
+            el = self._page.ele(selector, timeout=1)
+            if el:
+                logger.warning("检测到验证码，请在浏览器中完成验证")
+                input(">>> 验证完成后按回车继续...")
+                time.sleep(2)
+                return
+        # 检测是否被重定向到登录页
+        if "login" in self._page.url:
+            logger.warning("被重定向到登录页，请重新登录")
+            input(">>> 登录完成后按回车继续...")
+            time.sleep(2)
 
     async def search(self, keywords: list[str], limit: int = 20) -> list[dict]:
         if not DRISSION_AVAILABLE or not self._page:
@@ -65,9 +89,10 @@ class XhsCollector(BaseCollector):
         try:
             search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_note"
             self._page.get(search_url)
-            time.sleep(3)
+            self._wait_for_page_ready()
 
-            for _ in range(10):
+            # 等待搜索结果加载
+            for _ in range(15):
                 sections = self._page.eles("css:.note-item", timeout=2)
                 if sections:
                     break
@@ -93,14 +118,22 @@ class XhsCollector(BaseCollector):
                     cover_el = item.ele("css:img", timeout=1)
                     cover_url = cover_el.attr("src") if cover_el else ""
 
+                    # 获取笔记详情页内容
+                    note_url = f"https://www.xiaohongshu.com{href}" if href and not href.startswith("http") else href
+                    detail_content = ""
+                    detail_images = []
+
+                    if note_url and len(results) < limit:
+                        detail_content, detail_images = self._get_note_detail(note_url)
+
                     results.append({
                         "id": href.split("/")[-1] if href else "",
                         "title": title,
-                        "desc": title,
+                        "desc": detail_content or title,
                         "liked_count": self._parse_count(likes_text),
-                        "image_list": [cover_url] if cover_url else [],
+                        "image_list": detail_images or ([cover_url] if cover_url else []),
                         "user": author,
-                        "source_url": f"https://www.xiaohongshu.com{href}" if href and not href.startswith("http") else href,
+                        "source_url": note_url,
                     })
                 except Exception as e:
                     logger.debug(f"Error parsing note item: {e}")
@@ -109,6 +142,33 @@ class XhsCollector(BaseCollector):
             logger.error(f"XHS search error: {e}")
 
         return results
+
+    def _get_note_detail(self, url: str) -> tuple[str, list[str]]:
+        """进入笔记详情页获取完整正文和所有图片"""
+        content = ""
+        images = []
+        try:
+            # 在新标签页打开详情
+            tab = self._page.new_tab(url)
+            time.sleep(3)
+            self._wait_for_page_ready()
+
+            # 获取正文
+            desc_el = tab.ele("css:.note-text", timeout=3) or tab.ele("css:#detail-desc", timeout=2) or tab.ele("css:[class*='content']", timeout=2)
+            if desc_el:
+                content = desc_el.text
+
+            # 获取所有图片
+            img_els = tab.eles("css:.note-image img", timeout=2) or tab.eles("css:.carousel img", timeout=2)
+            for img in img_els:
+                src = img.attr("src")
+                if src and "xhscdn" in src:
+                    images.append(src)
+
+            tab.close()
+        except Exception as e:
+            logger.debug(f"Error getting note detail: {e}")
+        return content, images
 
     def _parse_count(self, text: str) -> int:
         text = text.strip()
