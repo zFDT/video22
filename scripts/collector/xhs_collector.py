@@ -39,20 +39,32 @@ class XhsCollector(BaseCollector):
         return await self._search_direct(keyword, limit)
 
     async def _search_via_mcp_api(self, keyword: str, limit: int) -> list[dict]:
-        """通过 xiaohongshu-mcp HTTP API 搜索（需要先启动 mcp server）"""
+        """通过 xiaohongshu-mcp HTTP API 搜索（端口 18060）"""
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(
-                    "http://127.0.0.1:9527/api/search",
-                    params={"keyword": keyword, "limit": limit},
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    "http://127.0.0.1:18060/api/v1/feeds/search",
+                    json={"keyword": keyword, "limit": limit},
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    notes = data.get("data", {}).get("notes", [])
-                    logger.info(f"MCP API returned {len(notes)} notes for '{keyword}'")
-                    return notes
+                    if data.get("success"):
+                        notes = data.get("data", [])
+                        if isinstance(notes, list):
+                            logger.info(f"MCP API returned {len(notes)} notes for '{keyword}'")
+                            return notes
+                        elif isinstance(notes, dict):
+                            items = notes.get("items", notes.get("notes", []))
+                            logger.info(f"MCP API returned {len(items)} items for '{keyword}'")
+                            return items
+                    else:
+                        logger.debug(f"MCP API error: {data.get('error', 'unknown')}")
+                else:
+                    logger.debug(f"MCP API returned {resp.status_code}")
+        except httpx.ReadTimeout:
+            logger.warning(f"MCP API timeout for '{keyword}' (120s)")
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            logger.info("xiaohongshu-mcp API not available, using direct method")
+            logger.debug("xiaohongshu-mcp API not available, using direct method")
         except Exception as e:
             logger.debug(f"MCP API error: {e}")
         return []

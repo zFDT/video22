@@ -22,8 +22,12 @@ class McpServiceManager:
     def __init__(self):
         self.processes: dict[str, subprocess.Popen] = {}
 
-    def start_xhs_mcp(self, port: int = 9527) -> bool:
-        """启动小红书 MCP 服务"""
+    def start_xhs_mcp(self, port: int = 18060) -> bool:
+        """启动小红书 MCP 服务
+
+        流程：先运行 login 工具确保登录状态，再启动 MCP 服务。
+        两者必须在同一工作目录下运行以共享浏览器 profile。
+        """
         exe_path = SERVICES_DIR / "xhs-mcp" / "xiaohongshu-mcp-windows-amd64.exe"
         if not exe_path.exists():
             logger.error(f"XHS MCP exe not found: {exe_path}")
@@ -33,10 +37,25 @@ class McpServiceManager:
             logger.info(f"XHS MCP already running on port {port}")
             return True
 
+        # 先确保登录状态（login 工具会自动检测，已登录则秒退）
+        login_exe = SERVICES_DIR / "xhs-mcp" / "xiaohongshu-login-windows-amd64.exe"
+        if login_exe.exists():
+            logger.info("Checking XHS login status...")
+            try:
+                result = subprocess.run(
+                    [str(login_exe)], cwd=str(login_exe.parent),
+                    timeout=120, capture_output=True,
+                )
+                if b"\xe7\x99\xbb\xe5\xbd\x95\xe6\x88\x90\xe5\x8a\x9f" in result.stderr or \
+                   b"true" in result.stderr:
+                    logger.info("XHS login confirmed")
+            except Exception as e:
+                logger.warning(f"Login check failed: {e}")
+
         logger.info(f"Starting XHS MCP on port {port}...")
         try:
             proc = subprocess.Popen(
-                [str(exe_path)],
+                [str(exe_path), "-port", f":{port}"],
                 cwd=str(exe_path.parent),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -44,13 +63,13 @@ class McpServiceManager:
             )
             self.processes["xhs-mcp"] = proc
 
-            for _ in range(30):
+            for _ in range(60):
                 if self._is_port_open(port):
                     logger.info("XHS MCP started successfully")
                     return True
                 time.sleep(0.5)
 
-            logger.error("XHS MCP failed to start within 15s")
+            logger.error("XHS MCP failed to start within 30s")
             return False
         except Exception as e:
             logger.error(f"Failed to start XHS MCP: {e}")
