@@ -1,6 +1,8 @@
 """
 多平台内容采集 & 自动化创作工作流 - 主入口
 
+流程：启动浏览器 → 登录一次 → 复用同一浏览器完成所有采集 → 关闭
+
 用法:
     python main.py                    # 执行全流程
     python main.py --collect          # 仅采集
@@ -35,8 +37,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def run_collection(config_dir: Path, output_base: Path, topic_filter: str | None = None):
-    """Phase 1: 多平台素材采集"""
+def init_browsers(config_dir: Path) -> tuple:
+    """启动浏览器并完成登录（每次流程只需登录一次）
+
+    返回 (xhs_page, douyin_page) 两个已登录的浏览器实例。
+    使用持久化用户数据目录，如果之前登录过可能自动跳过登录。
+    """
+    logger.info("=== 初始化浏览器 ===")
+
+    # 小红书浏览器
+    logger.info("启动小红书浏览器...")
+    xhs_page = XhsCollector.create_browser()
+    XhsCollector.wait_for_login(xhs_page)
+
+    # 抖音浏览器
+    logger.info("启动抖音浏览器...")
+    douyin_page = DouyinCollector.create_browser()
+    DouyinCollector.wait_for_login(douyin_page)
+
+    logger.info("=== 浏览器初始化完成，开始采集 ===\n")
+    return xhs_page, douyin_page
+
+
+async def run_collection(config_dir: Path, output_base: Path, xhs_page, douyin_page, topic_filter: str | None = None):
+    """Phase 1: 多平台素材采集（复用已登录的浏览器实例）"""
     logger.info("=== Phase 1: Content Collection ===")
 
     topics_config = json.loads((config_dir / "topics.json").read_text(encoding="utf-8"))
@@ -46,10 +70,9 @@ async def run_collection(config_dir: Path, output_base: Path, topic_filter: str 
     if topic_filter:
         topics = [t for t in topics if t["slug"] == topic_filter]
 
-    collectors = [
-        XhsCollector(config_dir),
-        DouyinCollector(config_dir),
-    ]
+    xhs_collector = XhsCollector(config_dir, page=xhs_page)
+    douyin_collector = DouyinCollector(config_dir, page=douyin_page)
+    collectors = [xhs_collector, douyin_collector]
 
     total_collected = 0
     for topic in topics:
@@ -135,20 +158,37 @@ async def main():
     logger.info(f"Workflow started at {datetime.now().isoformat()}")
     logger.info(f"Project root: {PROJECT_ROOT}")
 
-    if run_all or args.collect:
-        await run_collection(config_dir, raw_dir, args.topic)
+    xhs_page = None
+    douyin_page = None
 
-    if run_all or args.organize:
-        run_organization(PROJECT_ROOT)
+    try:
+        # 采集阶段：启动浏览器 → 登录 → 采集 → 关闭
+        if run_all or args.collect:
+            xhs_page, douyin_page = init_browsers(config_dir)
+            await run_collection(config_dir, raw_dir, xhs_page, douyin_page, args.topic)
 
-    if run_all or args.generate:
-        run_generation(PROJECT_ROOT, args.topic)
+        if run_all or args.organize:
+            run_organization(PROJECT_ROOT)
+
+        if run_all or args.generate:
+            run_generation(PROJECT_ROOT, args.topic)
+
+    finally:
+        # 采集完成后关闭浏览器
+        if xhs_page:
+            try:
+                xhs_page.quit()
+                logger.info("XHS browser closed")
+            except Exception:
+                pass
+        if douyin_page:
+            try:
+                douyin_page.quit()
+                logger.info("Douyin browser closed")
+            except Exception:
+                pass
 
     logger.info("Workflow completed successfully.")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 
 
 if __name__ == "__main__":

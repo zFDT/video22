@@ -11,6 +11,9 @@ from dataclasses import dataclass, asdict, field
 
 logger = logging.getLogger(__name__)
 
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+BROWSER_DATA_DIR = PROJECT_ROOT / "browser_data"
+
 
 @dataclass
 class MaterialItem:

@@ -1,11 +1,10 @@
-"""小红书采集器 - 基于 DrissionPage 浏览器自动化"""
+"""小红书采集器 - 单浏览器实例复用，流程开始时登录一次"""
 
 import logging
 import time
-import json
 from pathlib import Path
 
-from .base_collector import BaseCollector, MaterialItem
+from .base_collector import BaseCollector, MaterialItem, BROWSER_DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -16,46 +15,65 @@ except ImportError:
     DRISSION_AVAILABLE = False
     logger.warning("DrissionPage not installed. Run: pip install DrissionPage")
 
+XHS_BROWSER_DATA = BROWSER_DATA_DIR / "xhs"
+
 
 class XhsCollector(BaseCollector):
+    def __init__(self, config_dir, page: "ChromiumPage | None" = None):
+        super().__init__(config_dir)
+        self._page = page
+
     def get_platform_name(self) -> str:
         return "xhs"
 
-    def _create_browser(self) -> "ChromiumPage":
+    def set_page(self, page: "ChromiumPage"):
+        """注入已登录的浏览器实例"""
+        self._page = page
+
+    @staticmethod
+    def create_browser() -> "ChromiumPage":
+        """创建浏览器实例（持久化用户数据目录）"""
         co = ChromiumOptions()
+        co.set_user_data_path(str(XHS_BROWSER_DATA))
         co.set_argument("--disable-blink-features=AutomationControlled")
         co.set_argument("--no-first-run")
-        cookie = self.platform_config.get("cookie", "")
-        page = ChromiumPage(co)
-        if cookie:
-            for item in cookie.split("; "):
-                if "=" in item:
-                    name, value = item.split("=", 1)
-                    page.set.cookies({"name": name.strip(), "value": value.strip(), "domain": ".xiaohongshu.com"})
-        return page
+        co.set_argument("--no-default-browser-check")
+        return ChromiumPage(co)
+
+    @staticmethod
+    def wait_for_login(page: "ChromiumPage") -> bool:
+        """打开小红书首页，等待用户确认已登录"""
+        page.get("https://www.xiaohongshu.com")
+        time.sleep(2)
+        # 检查是否已登录（有用户头像元素）
+        avatar = page.ele("css:.user-avatar", timeout=3) or page.ele("css:[class*='avatar']", timeout=2)
+        if avatar:
+            logger.info("XHS: already logged in (session from previous run)")
+            return True
+        logger.info("XHS: waiting for login... please log in in the browser window")
+        input(">>> 请在浏览器中登录小红书，完成后按回车继续...")
+        return True
 
     async def search(self, keywords: list[str], limit: int = 20) -> list[dict]:
-        if not DRISSION_AVAILABLE:
-            logger.error("DrissionPage not available")
+        if not DRISSION_AVAILABLE or not self._page:
+            logger.error("Browser not available")
             return []
 
         keyword = " ".join(keywords)
         results = []
 
         try:
-            page = self._create_browser()
             search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_note"
-            page.get(search_url)
+            self._page.get(search_url)
             time.sleep(3)
 
-            # 等待搜索结果加载
             for _ in range(10):
-                sections = page.eles("css:.note-item", timeout=2)
+                sections = self._page.eles("css:.note-item", timeout=2)
                 if sections:
                     break
                 time.sleep(1)
 
-            note_items = page.eles("css:.note-item")
+            note_items = self._page.eles("css:.note-item")
             logger.info(f"Found {len(note_items)} note items for '{keyword}'")
 
             for item in note_items[:limit]:
@@ -75,13 +93,11 @@ class XhsCollector(BaseCollector):
                     cover_el = item.ele("css:img", timeout=1)
                     cover_url = cover_el.attr("src") if cover_el else ""
 
-                    likes = self._parse_count(likes_text)
-
                     results.append({
                         "id": href.split("/")[-1] if href else "",
                         "title": title,
                         "desc": title,
-                        "liked_count": likes,
+                        "liked_count": self._parse_count(likes_text),
                         "image_list": [cover_url] if cover_url else [],
                         "user": author,
                         "source_url": f"https://www.xiaohongshu.com{href}" if href and not href.startswith("http") else href,
@@ -89,10 +105,8 @@ class XhsCollector(BaseCollector):
                 except Exception as e:
                     logger.debug(f"Error parsing note item: {e}")
                     continue
-
-            page.quit()
         except Exception as e:
-            logger.error(f"XHS DrissionPage search error: {e}")
+            logger.error(f"XHS search error: {e}")
 
         return results
 
@@ -111,8 +125,6 @@ class XhsCollector(BaseCollector):
         if not raw.get("title") and not raw.get("desc"):
             return None
 
-        note_id = raw.get("id", "")
-        media_urls = raw.get("image_list", [])
         liked = raw.get("liked_count", 0)
         if isinstance(liked, str):
             liked = self._parse_count(liked)
@@ -123,7 +135,7 @@ class XhsCollector(BaseCollector):
             topic=topic_name,
             title=raw.get("title", ""),
             content=raw.get("desc", ""),
-            media_urls=media_urls,
+            media_urls=raw.get("image_list", []),
             media_type="image",
             metrics={"likes": liked, "author": raw.get("user", "")},
             source_url=raw.get("source_url", ""),
