@@ -23,6 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from collector import XhsCollector, DouyinCollector, WeiboCollector
 from organizer import MaterialOrganizer
 from generator import ContentGenerator
+from services import McpServiceManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -127,6 +128,7 @@ async def main():
     parser.add_argument("--organize", action="store_true", help="仅执行整理")
     parser.add_argument("--generate", action="store_true", help="仅执行生成")
     parser.add_argument("--topic", type=str, default=None, help="指定话题 slug (如 fdm_3d_printing)")
+    parser.add_argument("--no-mcp", action="store_true", help="不启动 MCP 服务")
     args = parser.parse_args()
 
     run_all = not (args.collect or args.organize or args.generate)
@@ -136,16 +138,29 @@ async def main():
     logger.info(f"Workflow started at {datetime.now().isoformat()}")
     logger.info(f"Project root: {PROJECT_ROOT}")
 
-    if run_all or args.collect:
-        await run_collection(config_dir, raw_dir, args.topic)
+    # 采集阶段需要 MCP 服务
+    need_mcp = (run_all or args.collect) and not args.no_mcp
 
-    if run_all or args.organize:
-        run_organization(PROJECT_ROOT)
+    with McpServiceManager() if need_mcp else NullContext():
+        if run_all or args.collect:
+            await run_collection(config_dir, raw_dir, args.topic)
 
-    if run_all or args.generate:
-        run_generation(PROJECT_ROOT, args.topic)
+        if run_all or args.organize:
+            run_organization(PROJECT_ROOT)
+
+        if run_all or args.generate:
+            run_generation(PROJECT_ROOT, args.topic)
 
     logger.info("Workflow completed successfully.")
+
+
+class NullContext:
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 
 if __name__ == "__main__":

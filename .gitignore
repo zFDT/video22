@@ -18,6 +18,9 @@ env/
 *.swp
 *.swo
 
+# Claude Code 配置
+.claude/
+
 # 敏感信息
 config/platforms.json
 config/douyin_cookies.json
@@ -29,11 +32,16 @@ logs/*.log
 # 采集的原始数据（体积大，不入库）
 materials/raw/
 
-# 系统文件
-Thumbs.db
-.DS_Store
+# MCP 服务（exe 大文件 + cookies 敏感信息）
+services/xhs-mcp/*.exe
+services/xhs-mcp/cookies*.json
+services/douyin-mcp/
 
 # Skills 相关
 .agents/
 skills-lock.json
 node_modules/
+
+# 系统文件
+Thumbs.db
+.DS_Store
