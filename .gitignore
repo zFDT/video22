@@ -21,10 +21,13 @@ env/
 # Claude Code 配置
 .claude/
 
-# 敏感信息
+# 敏感信息（Cookie、平台认证）
 config/platforms.json
 config/douyin_cookies.json
-*.cookies.json
+cookies.json
+
+# 浏览器持久化数据（含登录 session，体积大）
+browser_data/
 
 # 日志
 logs/*.log
@@ -32,7 +35,7 @@ logs/*.log
 # 采集的原始数据（体积大，不入库）
 materials/raw/
 
-# MCP 服务（exe 大文件 + cookies 敏感信息）
+# MCP 服务（exe 大文件 + 第三方源码）
 services/xhs-mcp/*.exe
 services/xhs-mcp/cookies*.json
 services/douyin-mcp/
@@ -45,3 +48,4 @@ node_modules/
 # 系统文件
 Thumbs.db
 .DS_Store
+desktop.ini
