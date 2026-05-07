@@ -14,6 +14,7 @@ sys_path = str(Path(__file__).parent.parent)
 if sys_path not in __import__('sys').path:
     __import__('sys').path.insert(0, sys_path)
 from utils.retry_utils import RetryConfig, retry_call_async
+from utils.concurrency_utils import ConcurrentExecutor, gather_with_limit
 
 logger = logging.getLogger(__name__)
 
@@ -117,23 +118,41 @@ class BaseCollector(ABC):
         max_retries = self.platform_config.get("max_retries", 3)
         retry_config = RetryConfig(max_retries=max_retries, initial_delay=2.0)
 
-        all_items = []
-        for keyword in keywords:
+        # 并行搜索关键词（最多 2 个并发，避免被服务器限流）
+        max_concurrent_keywords = 2
+
+        async def search_keyword(keyword: str):
+            """搜索单个关键词并返回结果"""
             try:
-                # 使用重试机制搜索
                 raw_results = await retry_call_async(
                     self.search,
                     [keyword],
-                    limit=limit // len(keywords),
+                    limit=limit // len(keywords) if keywords else limit,
                     config=retry_config,
                 )
+                items = []
                 for raw in raw_results:
                     item = self.parse_result(raw, topic_name)
                     if item:
-                        all_items.append(item)
+                        items.append(item)
                 await asyncio.sleep(rate_limit)
+                return items
             except Exception as e:
-                logger.error(f"Error collecting '{keyword}' from {self.platform_name} after retries: {e}")
+                logger.error(f"Error collecting '{keyword}' from {self.platform_name}: {e}")
+                return []
+
+        # 使用受限并发执行所有关键词搜索
+        search_tasks = [search_keyword(kw) for kw in keywords]
+        results = await gather_with_limit(
+            search_tasks,
+            max_concurrent=max_concurrent_keywords,
+            return_exceptions=False
+        )
+
+        all_items = []
+        for result in results:
+            if isinstance(result, list):
+                all_items.extend(result)
 
         seen_urls = set()
         unique_items = []
@@ -164,49 +183,63 @@ class BaseCollector(ABC):
         return filepath
 
     def _download_media(self, items: list[MaterialItem], media_dir: Path):
-        """下载所有素材的图片/视频到本地"""
+        """下载所有素材的图片/视频到本地（使用并发下载）"""
         import httpx
 
         if not any(item.media_urls for item in items):
             return
 
         media_dir.mkdir(parents=True, exist_ok=True)
+
+        # 构建下载任务列表
+        download_tasks = []
+        for i, item in enumerate(items):
+            for j, url in enumerate(item.media_urls):
+                if not url or not url.startswith("http"):
+                    continue
+                
+                ext = ".mp4" if item.media_type == "video" else ".jpg"
+                if ".webp" in url:
+                    ext = ".webp"
+                elif ".png" in url:
+                    ext = ".png"
+
+                filename = f"{i:03d}_{j:02d}{ext}"
+                filepath = media_dir / filename
+                download_tasks.append((url, filepath, item.media_type))
+
+        if not download_tasks:
+            return
+
+        # 并发下载（最多 4 个并发连接）
+        max_concurrent = 4
         downloaded = 0
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; content-collector/1.0)"}
 
-        with httpx.Client(timeout=30, headers=headers, follow_redirects=True) as client:
-            for i, item in enumerate(items):
-                for j, url in enumerate(item.media_urls):
-                    if not url or not url.startswith("http"):
-                        continue
-                    try:
-                        ext = ".mp4" if item.media_type == "video" else ".jpg"
-                        if ".webp" in url:
-                            ext = ".webp"
-                        elif ".png" in url:
-                            ext = ".png"
+        def _download_file(task):
+            url, filepath, media_type = task
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; content-collector/1.0)"}
+            
+            for attempt in range(3):
+                try:
+                    with httpx.Client(timeout=30, headers=headers, follow_redirects=True) as client:
+                        with client.stream("GET", url, timeout=30) as resp:
+                            if resp.status_code == 200:
+                                with open(filepath, "wb") as out_f:
+                                    for chunk in resp.iter_bytes():
+                                        out_f.write(chunk)
+                                return True
+                            else:
+                                logger.debug(f"Non-200 response {resp.status_code} for {url}")
+                except Exception as e:
+                    logger.debug(f"Download attempt {attempt+1} failed for {url[:60]}: {e}")
+                    time.sleep(1)
+            
+            return False
 
-                        filename = f"{i:03d}_{j:02d}{ext}"
-                        filepath = media_dir / filename
-
-                        # 下载时使用流式读取以避免一次性加载到内存，并做简单重试
-                        for attempt in range(3):
-                            try:
-                                with client.stream("GET", url, timeout=30) as resp:
-                                    if resp.status_code == 200:
-                                        with open(filepath, "wb") as out_f:
-                                            for chunk in resp.iter_bytes():
-                                                out_f.write(chunk)
-                                        downloaded += 1
-                                        break
-                                    else:
-                                        logger.debug(f"Non-200 response {resp.status_code} for {url}")
-                            except Exception as e:
-                                logger.debug(f"Download attempt {attempt+1} failed for {url[:60]}: {e}")
-                                time.sleep(1)
-                                continue
-                    except Exception as e:
-                        logger.debug(f"Failed to download {url[:60]}: {e}")
+        # 使用线程池执行并发下载
+        with ConcurrentExecutor(max_workers=max_concurrent) as executor:
+            results = executor.map(_download_file, download_tasks, timeout=300)
+            downloaded = sum(1 for r in results if r)
 
         if downloaded:
-            logger.info(f"Downloaded {downloaded} media files to {media_dir}")
+            logger.info(f"Downloaded {downloaded}/{len(download_tasks)} media files to {media_dir}")
