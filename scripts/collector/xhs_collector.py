@@ -1,4 +1,4 @@
-"""小红书采集器 - 单浏览器实例复用，支持验证码等待和内容下载"""
+"""小红书采集器 - 单浏览器实例复用，点击笔记获取详情"""
 
 import logging
 import time
@@ -33,7 +33,7 @@ class XhsCollector(BaseCollector):
 
     @staticmethod
     def create_browser() -> "ChromiumPage":
-        """创建独立的浏览器实例（固定端口 9511，与抖音隔离）"""
+        """创建独立的浏览器实例（固定端口 9511）"""
         co = ChromiumOptions()
         co.set_user_data_path(str(XHS_BROWSER_DATA))
         co.set_local_port(XHS_PORT)
@@ -55,28 +55,21 @@ class XhsCollector(BaseCollector):
         input(">>> 小红书登录完成后，按回车继续...")
         return True
 
-    def _wait_for_page_ready(self):
-        """等待页面加载完成，如果遇到验证码则暂停等待用户处理"""
-        time.sleep(2)
-        # 检测常见的验证码/风控页面
-        captcha_signs = [
-            "css:.captcha-container",
-            "css:#captcha",
-            "css:[class*='verify']",
-            "css:[class*='captcha']",
-        ]
-        for selector in captcha_signs:
-            el = self._page.ele(selector, timeout=1)
-            if el:
-                logger.warning("检测到验证码，请在浏览器中完成验证")
-                input(">>> 验证完成后按回车继续...")
-                time.sleep(2)
-                return
-        # 检测是否被重定向到登录页
-        if "login" in self._page.url:
-            logger.warning("被重定向到登录页，请重新登录")
-            input(">>> 登录完成后按回车继续...")
+    def _check_captcha(self) -> bool:
+        """检测是否有真正的验证码弹窗（精确匹配，避免误报）"""
+        # 只检测真正的滑块验证码容器
+        captcha = self._page.ele("css:#captcha-div", timeout=1)
+        if not captcha:
+            captcha = self._page.ele("css:.captcha-container", timeout=1)
+        if not captcha:
+            # 检测是否整个页面被验证码覆盖
+            captcha = self._page.ele("text:请通过验证", timeout=1)
+        if captcha:
+            logger.warning("检测到验证码，请在浏览器中完成验证")
+            input(">>> 验证完成后按回车继续...")
             time.sleep(2)
+            return True
+        return False
 
     async def search(self, keywords: list[str], limit: int = 20) -> list[dict]:
         if not DRISSION_AVAILABLE or not self._page:
@@ -89,7 +82,8 @@ class XhsCollector(BaseCollector):
         try:
             search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_note"
             self._page.get(search_url)
-            self._wait_for_page_ready()
+            time.sleep(3)
+            self._check_captcha()
 
             # 等待搜索结果加载
             for _ in range(15):
@@ -101,8 +95,9 @@ class XhsCollector(BaseCollector):
             note_items = self._page.eles("css:.note-item")
             logger.info(f"Found {len(note_items)} note items for '{keyword}'")
 
-            for item in note_items[:limit]:
+            for idx, item in enumerate(note_items[:limit]):
                 try:
+                    # 从列表获取基本信息
                     title_el = item.ele("css:.title", timeout=1)
                     title = title_el.text if title_el else ""
 
@@ -118,31 +113,86 @@ class XhsCollector(BaseCollector):
                     cover_el = item.ele("css:img", timeout=1)
                     cover_url = cover_el.attr("src") if cover_el else ""
 
-                    note_url = ""
-                    if href:
-                        if href.startswith("http"):
-                            note_url = href
-                        elif href.startswith("/"):
-                            note_url = f"https://www.xiaohongshu.com{href}"
-                        else:
-                            note_url = f"https://www.xiaohongshu.com/{href}"
+                    note_url = self._build_note_url(href)
+
+                    # 点击笔记获取详情（弹窗模式）
+                    detail_content, detail_images = self._get_detail_by_click(item)
 
                     results.append({
                         "id": href.split("/")[-1] if href else "",
                         "title": title,
-                        "desc": title,
+                        "desc": detail_content or title,
                         "liked_count": self._parse_count(likes_text),
-                        "image_list": [cover_url] if cover_url else [],
+                        "image_list": detail_images or ([cover_url] if cover_url else []),
                         "user": author,
                         "source_url": note_url,
                     })
                 except Exception as e:
-                    logger.debug(f"Error parsing note item: {e}")
+                    logger.debug(f"Error parsing note item {idx}: {e}")
                     continue
         except Exception as e:
             logger.error(f"XHS search error: {e}")
 
         return results
+
+    def _build_note_url(self, href: str) -> str:
+        if not href:
+            return ""
+        if href.startswith("http"):
+            return href
+        if href.startswith("/"):
+            return f"https://www.xiaohongshu.com{href}"
+        return f"https://www.xiaohongshu.com/{href}"
+
+    def _get_detail_by_click(self, item) -> tuple[str, list[str]]:
+        """点击笔记卡片，从弹出的详情面板获取正文和图片"""
+        content = ""
+        images = []
+        try:
+            # 点击笔记卡片
+            item.click()
+            time.sleep(2)
+
+            # 小红书搜索页点击后会弹出右侧详情面板
+            # 获取正文
+            desc_el = (
+                self._page.ele("css:.note-content .desc", timeout=3)
+                or self._page.ele("css:#detail-desc", timeout=2)
+                or self._page.ele("css:[class*='note-text']", timeout=2)
+                or self._page.ele("css:.content [class*='desc']", timeout=2)
+            )
+            if desc_el:
+                content = desc_el.text
+
+            # 获取所有图片
+            img_els = (
+                self._page.eles("css:.note-content img[src*='xhscdn']", timeout=2)
+                or self._page.eles("css:.carousel-container img", timeout=2)
+                or self._page.eles("css:[class*='slide'] img[src*='xhscdn']", timeout=2)
+            )
+            for img in img_els:
+                src = img.attr("src")
+                if src and ("xhscdn" in src or "sns-webpic" in src):
+                    images.append(src)
+
+            # 关闭详情面板（按 ESC 或点击关闭按钮）
+            close_btn = self._page.ele("css:[class*='close']", timeout=1)
+            if close_btn:
+                close_btn.click()
+            else:
+                self._page.actions.key_down("ESCAPE").key_up("ESCAPE")
+            time.sleep(0.5)
+
+        except Exception as e:
+            logger.debug(f"Error getting detail: {e}")
+            # 确保关闭弹窗
+            try:
+                self._page.actions.key_down("ESCAPE").key_up("ESCAPE")
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        return content, images
 
     def _parse_count(self, text: str) -> int:
         text = text.strip()
