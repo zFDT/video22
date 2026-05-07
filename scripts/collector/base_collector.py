@@ -159,14 +159,15 @@ class BaseCollector(ABC):
 
         media_dir.mkdir(parents=True, exist_ok=True)
         downloaded = 0
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; content-collector/1.0)"}
 
-        with httpx.Client(timeout=30, follow_redirects=True) as client:
+        with httpx.Client(timeout=30, headers=headers, follow_redirects=True) as client:
             for i, item in enumerate(items):
                 for j, url in enumerate(item.media_urls):
                     if not url or not url.startswith("http"):
                         continue
                     try:
-                        ext = ".jpg" if item.media_type == "image" else ".mp4"
+                        ext = ".mp4" if item.media_type == "video" else ".jpg"
                         if ".webp" in url:
                             ext = ".webp"
                         elif ".png" in url:
@@ -174,10 +175,23 @@ class BaseCollector(ABC):
 
                         filename = f"{i:03d}_{j:02d}{ext}"
                         filepath = media_dir / filename
-                        resp = client.get(url)
-                        if resp.status_code == 200:
-                            filepath.write_bytes(resp.content)
-                            downloaded += 1
+
+                        # 下载时使用流式读取以避免一次性加载到内存，并做简单重试
+                        for attempt in range(3):
+                            try:
+                                with client.stream("GET", url, timeout=30) as resp:
+                                    if resp.status_code == 200:
+                                        with open(filepath, "wb") as out_f:
+                                            for chunk in resp.iter_bytes():
+                                                out_f.write(chunk)
+                                        downloaded += 1
+                                        break
+                                    else:
+                                        logger.debug(f"Non-200 response {resp.status_code} for {url}")
+                            except Exception as e:
+                                logger.debug(f"Download attempt {attempt+1} failed for {url[:60]}: {e}")
+                                time.sleep(1)
+                                continue
                     except Exception as e:
                         logger.debug(f"Failed to download {url[:60]}: {e}")
 

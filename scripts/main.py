@@ -106,9 +106,7 @@ async def _collect_one(collector, topic: dict, limit: int, output_base: Path) ->
     except Exception as e:
         logger.error(f"  {collector.get_platform_name()} failed: {e}")
     return 0
-
-    logger.info(f"Collection complete. Total: {total_collected} items")
-    return total_collected
+    
 
 
 def run_organization(project_root: Path) -> dict:

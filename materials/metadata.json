@@ -1,11 +1,11 @@
 {
-  "last_organized": "2026-05-07T10:50:43.360102",
-  "total_items": 17,
+  "last_organized": "2026-05-07T11:43:29.536405",
+  "total_items": 19,
   "topics": {
     "fdm_3d_printing": {
-      "count": 13,
+      "count": 14,
       "platforms": {
-        "xhs": 13
+        "xhs": 14
       },
       "top_items": [
         {
@@ -41,9 +41,9 @@
       "top_items": []
     },
     "dreame": {
-      "count": 4,
+      "count": 5,
       "platforms": {
-        "xhs": 4
+        "xhs": 5
       },
       "top_items": [
         {
@@ -54,6 +54,11 @@
         {
           "title": "追觅被裁亲身经历",
           "likes": 527,
+          "platform": "xhs"
+        },
+        {
+          "title": "《看新闻发现朋友27岁居然是追觅总裁？？》",
+          "likes": 429,
           "platform": "xhs"
         },
         {
