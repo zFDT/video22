@@ -1,4 +1,4 @@
-"""内容生成编排脚本 - 调用 Claude Code skills 进行选题分析和内容生成"""
+"""内容生成模块 - 调用 Claude 生成文案，图片生成预留接口"""
 
 import json
 import subprocess
@@ -20,33 +20,31 @@ class ContentGenerator:
         with open(config_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    def _load_topics_config(self) -> dict:
-        config_path = self.project_root / "config" / "topics.json"
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    def analyze_and_generate(self, topic_slug: str, materials: list[dict]) -> dict:
-        """对指定话题的素材进行分析并生成内容"""
+    def generate_all(self, topic_slug: str, materials: list[dict]) -> dict:
+        """完整生成流程：分析 → 文案 → 图片（如果可用）"""
         if not materials:
             logger.warning(f"No materials for topic: {topic_slug}")
             return {}
 
+        # Step 1: 分析选题方向
         analysis = self._analyze_topic(topic_slug, materials)
-        copywriting = self._generate_copywriting(topic_slug, analysis, materials)
+
+        # Step 2: 生成文案
+        posts = self._generate_copywriting(topic_slug, analysis, materials)
+
+        # Step 3: 保存结果
         output = {
             "topic": topic_slug,
             "generated_at": datetime.now().isoformat(),
             "analysis": analysis,
-            "posts": copywriting,
+            "posts": posts,
         }
-
-        self._save_posts(topic_slug, output)
+        self._save_output(topic_slug, output)
         return output
 
     def _analyze_topic(self, topic_slug: str, materials: list[dict]) -> dict:
-        """分析话题趋势 - 生成选题方向建议"""
+        """分析素材，提取选题方向"""
         titles = [m.get("title", "") for m in materials[:10]]
-        contents = [m.get("content", "")[:200] for m in materials[:5]]
         platforms = {}
         for m in materials:
             p = m.get("platform", "unknown")
@@ -55,42 +53,41 @@ class ContentGenerator:
         total_likes = sum(m.get("metrics", {}).get("likes", 0) for m in materials)
         avg_likes = total_likes // len(materials) if materials else 0
 
-        analysis = {
+        # 从素材标题中提取热门角度
+        angles = self._suggest_angles(topic_slug, titles)
+
+        return {
             "topic_slug": topic_slug,
             "material_count": len(materials),
             "platform_distribution": platforms,
             "avg_engagement": avg_likes,
             "top_titles": titles[:5],
-            "content_samples": contents[:3],
-            "suggested_angles": self._suggest_angles(topic_slug, titles, contents),
+            "suggested_angles": angles,
         }
-        return analysis
 
-    def _suggest_angles(self, topic_slug: str, titles: list[str], contents: list[str]) -> list[str]:
-        """基于素材内容推荐创作角度"""
+    def _suggest_angles(self, topic_slug: str, titles: list[str]) -> list[str]:
+        """基于素材推荐创作角度"""
         angle_map = {
             "fdm_3d_printing": [
-                "新手入门指南：FDM打印避坑攻略",
-                "耗材对比评测：PLA vs PETG 实测",
-                "创意打印作品展示",
-                "打印失败排查：常见问题解决方案",
+                "新手入门：FDM 3D打印避坑指南",
+                "耗材实测对比：PLA vs PETG vs ABS",
+                "创意作品展示：用3D打印改造生活",
             ],
             "atomic_reshaping": [
-                "前沿科技解读：原子重塑技术原理",
-                "应用场景展望：从实验室到产业化",
-                "技术对比：传统制造 vs 原子级制造",
+                "前沿科技：原子重塑技术深度解读",
+                "应用前景：从实验室到量产的距离",
+                "技术对比：传统制造 vs 原子级精度",
             ],
             "dreame": [
-                "追觅新品深度评测",
-                "追觅 vs 竞品对比",
-                "智能清洁解决方案推荐",
-                "追觅使用技巧分享",
+                "追觅新品深度评测体验",
+                "追觅 vs 竞品横向对比",
+                "智能清洁方案推荐与使用技巧",
             ],
         }
-        return angle_map.get(topic_slug, ["通用话题讨论"])
+        return angle_map.get(topic_slug, ["热门话题深度解读"])
 
     def _generate_copywriting(self, topic_slug: str, analysis: dict, materials: list[dict]) -> list[dict]:
-        """生成多平台文案"""
+        """使用 Claude 生成多平台文案"""
         copy_config = self.config.get("copywriting", {})
         platforms_style = copy_config.get("platforms", {})
         angles = analysis.get("suggested_angles", [])
@@ -100,79 +97,98 @@ class ContentGenerator:
             ref_material = materials[i] if i < len(materials) else materials[0]
 
             for platform, style_config in platforms_style.items():
+                # 构建 prompt
+                prompt = self._build_prompt(angle, platform, style_config, ref_material)
+
+                # 调用 Claude 生成文案
+                generated_text = self._call_claude(prompt)
+
                 post = {
                     "angle": angle,
                     "platform": platform,
                     "style": style_config.get("style", ""),
+                    "generated_text": generated_text,
                     "reference_material": {
                         "title": ref_material.get("title", ""),
                         "source_url": ref_material.get("source_url", ""),
                     },
-                    "prompt_for_claude": self._build_copy_prompt(angle, platform, style_config, ref_material),
-                    "status": "pending_generation",
+                    "image_prompt": self._build_image_prompt(angle, topic_slug),
+                    "status": "text_done" if generated_text else "failed",
                 }
                 posts.append(post)
 
         return posts
 
-    def _build_copy_prompt(self, angle: str, platform: str, style_config: dict, ref_material: dict) -> str:
-        """构建给 Claude Code 的文案生成 prompt"""
+    def _build_prompt(self, angle: str, platform: str, style_config: dict, ref_material: dict) -> str:
+        """构建文案生成 prompt"""
         style = style_config.get("style", "")
         max_len = self.config.get("copywriting", {}).get("max_length", 500)
         hashtag_count = self.config.get("copywriting", {}).get("hashtag_count", 5)
 
-        prompt = f"""请为{platform}平台生成一篇关于"{angle}"的内容文案。
+        platform_names = {"xhs": "小红书", "douyin": "抖音", "weibo": "微博"}
+        platform_cn = platform_names.get(platform, platform)
+
+        return f"""请为{platform_cn}平台生成一篇关于"{angle}"的内容文案。
 
 要求：
 - 风格：{style}
-- 字数限制：{max_len}字以内
+- 字数：{max_len}字以内
 - 包含{hashtag_count}个相关话题标签
-- 参考素材标题：{ref_material.get('title', '')}
-- 参考素材内容摘要：{ref_material.get('content', '')[:200]}
+- 参考素材：{ref_material.get('title', '')}
+- 内容要有信息量，不要空洞
 
-请直接输出文案内容，包含标题和正文。"""
-        return prompt
+直接输出文案（标题 + 正文 + 标签），不要解释。"""
 
-    def _save_posts(self, topic_slug: str, output: dict):
+    def _call_claude(self, prompt: str) -> str:
+        """调用 Claude 生成文案（通过 claude CLI）"""
+        try:
+            result = subprocess.run(
+                ["claude", "--print", "-p", prompt],
+                capture_output=True, text=True, timeout=60, encoding="utf-8",
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            else:
+                logger.warning(f"Claude CLI returned code {result.returncode}")
+                if result.stderr:
+                    logger.debug(f"stderr: {result.stderr[:200]}")
+        except FileNotFoundError:
+            logger.warning("Claude CLI not found, using prompt-only mode")
+        except subprocess.TimeoutExpired:
+            logger.warning("Claude CLI timed out")
+        except Exception as e:
+            logger.warning(f"Claude CLI error: {e}")
+
+        return ""
+
+    def _build_image_prompt(self, angle: str, topic_slug: str) -> str:
+        """生成配图的英文 prompt（供后续图片生成服务使用）"""
+        image_config = self.config.get("image", {})
+        style = image_config.get("style", "modern_tech")
+
+        return (
+            f"Create a visually appealing social media image for: {angle}. "
+            f"Style: {style}, clean modern design, vibrant colors. "
+            f"Aspect ratio: {image_config.get('aspect_ratio', '1:1')}. "
+            f"No text overlay."
+        )
+
+    def _save_output(self, topic_slug: str, output: dict):
+        """保存生成结果"""
         posts_dir = self.output_dir / "posts"
         posts_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = posts_dir / f"{topic_slug}_{timestamp}.json"
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
-        logger.info(f"Posts saved to {filepath}")
+        logger.info(f"Generated content saved to {filepath}")
 
-    def generate_image_prompts(self, posts: list[dict]) -> list[dict]:
-        """为文案生成配图 prompt"""
-        image_config = self.config.get("image", {})
-        prompts = []
-        for post in posts:
-            if post.get("status") == "pending_generation":
-                prompt = {
-                    "post_angle": post["angle"],
-                    "platform": post["platform"],
-                    "image_prompt": f"Create a visually appealing image for: {post['angle']}. "
-                                    f"Style: modern tech, clean design. Aspect ratio: {image_config.get('aspect_ratio', '1:1')}",
-                    "resolution": image_config.get("resolution", "1024x1024"),
-                    "provider": image_config.get("provider", "inference-skills"),
-                }
-                prompts.append(prompt)
-        return prompts
+        # 同时保存纯文案文件（方便直接使用）
+        text_dir = self.output_dir / "posts" / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        for i, post in enumerate(output.get("posts", [])):
+            if post.get("generated_text"):
+                text_file = text_dir / f"{topic_slug}_{post['platform']}_{i:02d}.txt"
+                text_file.write_text(post["generated_text"], encoding="utf-8")
 
-    def generate_video_prompts(self, posts: list[dict]) -> list[dict]:
-        """为文案生成视频 prompt"""
-        video_config = self.config.get("video", {})
-        prompts = []
-        for post in posts:
-            if post.get("platform") == "douyin" and post.get("status") == "pending_generation":
-                prompt = {
-                    "post_angle": post["angle"],
-                    "video_prompt": f"Create a short-form video about: {post['angle']}. "
-                                    f"Duration: {video_config.get('duration_seconds', 15)}s. "
-                                    f"Style: engaging, informative.",
-                    "duration": video_config.get("duration_seconds", 15),
-                    "resolution": video_config.get("resolution", "1080x1920"),
-                    "provider": video_config.get("provider", "deer-flow"),
-                }
-                prompts.append(prompt)
-        return prompts
+        logger.info(f"Text files saved to {text_dir}")

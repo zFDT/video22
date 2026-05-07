@@ -121,7 +121,7 @@ def run_organization(project_root: Path) -> dict:
 
 
 def run_generation(project_root: Path, topic_filter: str | None = None) -> list[dict]:
-    """Phase 3: 内容生成"""
+    """Phase 3: 内容生成（Claude 文案 + 图片 prompt）"""
     logger.info("=== Phase 3: Content Generation ===")
     generator = ContentGenerator(project_root)
     organizer = MaterialOrganizer(project_root)
@@ -138,25 +138,12 @@ def run_generation(project_root: Path, topic_filter: str | None = None) -> list[
             logger.warning(f"No organized materials for {slug}, skipping generation")
             continue
 
-        output = generator.analyze_and_generate(slug, materials)
-        all_outputs.append(output)
-
-        posts = output.get("posts", [])
-        image_prompts = generator.generate_image_prompts(posts)
-        video_prompts = generator.generate_video_prompts(posts)
-
-        prompts_dir = project_root / "output" / "posts"
-        prompts_dir.mkdir(parents=True, exist_ok=True)
-
-        if image_prompts:
-            img_path = prompts_dir / f"{slug}_image_prompts.json"
-            img_path.write_text(json.dumps(image_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info(f"  Image prompts: {len(image_prompts)} saved to {img_path}")
-
-        if video_prompts:
-            vid_path = prompts_dir / f"{slug}_video_prompts.json"
-            vid_path.write_text(json.dumps(video_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info(f"  Video prompts: {len(video_prompts)} saved to {vid_path}")
+        output = generator.generate_all(slug, materials)
+        if output:
+            all_outputs.append(output)
+            posts = output.get("posts", [])
+            done = sum(1 for p in posts if p.get("status") == "text_done")
+            logger.info(f"  {slug}: {done}/{len(posts)} posts generated")
 
     logger.info(f"Generation complete. {len(all_outputs)} topics processed")
     return all_outputs
