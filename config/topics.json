@@ -3,19 +3,13 @@
     {
       "name": "FDM 3D打印",
       "slug": "fdm_3d_printing",
-      "keywords": ["FDM", "3D打印", "FDM打印", "3D打印机", "耗材", "PLA", "PETG", "打印失败"],
+      "keywords": ["FDM", "3D打印", "FDM打印", "3D打印机", "耗材", "PLA", "PETG", "打印失败","3D打印技巧","FDM打印机","FDM打印技巧"],
       "platforms": ["xhs", "douyin", "weibo"]
     },
     {
       "name": "原子重塑",
       "slug": "atomic_reshaping",
-      "keywords": ["原子重塑", "AtomForm"],
-      "platforms": ["xhs", "douyin", "weibo"]
-    },
-    {
-      "name": "dreame",
-      "slug": "dreame",
-      "keywords": ["dreame", "追觅", "追觅科技"],
+      "keywords": ["原子重塑", "AtomForm","三十六色打印","十二喷嘴"],
       "platforms": ["xhs", "douyin", "weibo"]
     }
   ],
