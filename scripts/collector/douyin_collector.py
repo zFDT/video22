@@ -1,4 +1,4 @@
-"""抖音采集器 - 单浏览器实例复用，支持验证码等待"""
+"""抖音采集器 - 单浏览器实例复用，采集视频信息并下载"""
 
 import logging
 import time
@@ -33,7 +33,7 @@ class DouyinCollector(BaseCollector):
 
     @staticmethod
     def create_browser() -> "ChromiumPage":
-        """创建独立的浏览器实例（固定端口 9512，与小红书隔离）"""
+        """创建独立的浏览器实例（固定端口 9512）"""
         co = ChromiumOptions()
         co.set_user_data_path(str(DOUYIN_BROWSER_DATA))
         co.set_local_port(DOUYIN_PORT)
@@ -55,14 +55,11 @@ class DouyinCollector(BaseCollector):
         input(">>> 抖音登录完成后，按回车继续...")
         return True
 
-    def _wait_for_page_ready(self):
-        """等待页面加载，遇到验证码/机器人检测时暂停等待用户处理"""
-        time.sleep(3)
+    def _check_captcha(self) -> bool:
+        """检测抖音的机器人验证（精确匹配）"""
         captcha_signs = [
             "css:#captcha-verify-image",
             "css:.captcha_verify_container",
-            "css:[class*='verify']",
-            "css:[class*='captcha']",
             "css:.secsdk-captcha-drag-icon",
         ]
         for selector in captcha_signs:
@@ -71,14 +68,15 @@ class DouyinCollector(BaseCollector):
                 logger.warning("⚠️  检测到机器人验证，请在浏览器中完成验证")
                 input(">>> 验证完成后按回车继续...")
                 time.sleep(2)
-                return
+                return True
 
-        # 检测"请完成验证"文字
-        verify_text = self._page.ele("text:请完成验证", timeout=1) or self._page.ele("text:验证码", timeout=1)
+        verify_text = self._page.ele("text:请完成验证", timeout=1)
         if verify_text:
             logger.warning("⚠️  检测到验证提示，请在浏览器中完成")
             input(">>> 验证完成后按回车继续...")
             time.sleep(2)
+            return True
+        return False
 
     async def search(self, keywords: list[str], limit: int = 20) -> list[dict]:
         if not DRISSION_AVAILABLE or not self._page:
@@ -91,28 +89,22 @@ class DouyinCollector(BaseCollector):
         try:
             search_url = f"https://www.douyin.com/search/{keyword}?type=video"
             self._page.get(search_url)
-            self._wait_for_page_ready()
-
-            # 等待搜索结果加载
-            time.sleep(3)
+            time.sleep(4)
+            self._check_captcha()
 
             # 滚动加载更多
             scroll_count = min(limit // 5 + 1, 3)
             for i in range(scroll_count):
                 self._page.scroll.to_bottom()
                 time.sleep(2)
-                # 每次滚动后检查验证码
-                self._wait_for_page_ready()
+                self._check_captcha()
 
-            # 解析视频卡片 - 多种选择器兼容抖音页面变化
+            # 解析视频卡片
             video_cards = self._page.eles("css:[data-e2e='scroll-list'] > div", timeout=5)
             if not video_cards:
                 video_cards = self._page.eles("css:.search-result-card", timeout=3)
             if not video_cards:
                 video_cards = self._page.eles("css:li[class*='video']", timeout=3)
-            if not video_cards:
-                # 最后尝试通用选择器
-                video_cards = self._page.eles("css:div[class*='search'] a[href*='/video/']", timeout=3)
 
             logger.info(f"Found {len(video_cards)} video cards for '{keyword}'")
 
@@ -136,13 +128,19 @@ class DouyinCollector(BaseCollector):
                     if not title:
                         continue
 
+                    video_url = href if href and href.startswith("http") else f"https://www.douyin.com{href}" if href else ""
+
+                    # 进入视频详情页获取文案和视频源
+                    desc, video_src = self._get_video_detail(video_url)
+
                     results.append({
                         "aweme_id": self._extract_video_id(href),
-                        "desc": title,
+                        "desc": desc or title,
                         "statistics": {"digg_count": self._parse_count(likes_text)},
                         "video_cover": cover_url,
+                        "video_src": video_src,
                         "author": author,
-                        "source_url": href if href and href.startswith("http") else f"https://www.douyin.com{href}" if href else "",
+                        "source_url": video_url,
                     })
                 except Exception as e:
                     logger.debug(f"Error parsing video card: {e}")
@@ -151,6 +149,46 @@ class DouyinCollector(BaseCollector):
             logger.error(f"Douyin search error: {e}")
 
         return results
+
+    def _get_video_detail(self, video_url: str) -> tuple[str, str]:
+        """进入视频详情页获取完整文案和视频源地址"""
+        desc = ""
+        video_src = ""
+        if not video_url:
+            return desc, video_src
+
+        try:
+            self._page.get(video_url)
+            time.sleep(3)
+            self._check_captcha()
+
+            # 获取视频文案
+            desc_el = (
+                self._page.ele("css:[data-e2e='video-desc']", timeout=3)
+                or self._page.ele("css:[class*='desc']", timeout=2)
+                or self._page.ele("css:.video-info-detail", timeout=2)
+            )
+            if desc_el:
+                desc = desc_el.text
+
+            # 获取视频源地址（从 video 标签）
+            video_el = self._page.ele("css:video source", timeout=3) or self._page.ele("css:video", timeout=2)
+            if video_el:
+                video_src = video_el.attr("src") or ""
+
+            # 返回搜索页
+            self._page.back()
+            time.sleep(2)
+
+        except Exception as e:
+            logger.debug(f"Error getting video detail from {video_url}: {e}")
+            try:
+                self._page.back()
+                time.sleep(1)
+            except Exception:
+                pass
+
+        return desc, video_src
 
     def _extract_video_id(self, url: str) -> str:
         match = re.search(r"/video/(\d+)", url)
@@ -175,13 +213,19 @@ class DouyinCollector(BaseCollector):
             return None
 
         stats = raw.get("statistics", {})
+        media_urls = []
+        if raw.get("video_src"):
+            media_urls.append(raw["video_src"])
+        if raw.get("video_cover"):
+            media_urls.append(raw["video_cover"])
+
         return MaterialItem(
             id="",
             platform="douyin",
             topic=topic_name,
             title=desc[:50] if len(desc) > 50 else desc,
             content=desc,
-            media_urls=[raw.get("video_cover", "")] if raw.get("video_cover") else [],
+            media_urls=media_urls,
             media_type="video",
             metrics={"likes": stats.get("digg_count", 0), "author": raw.get("author", "")},
             source_url=raw.get("source_url", ""),
