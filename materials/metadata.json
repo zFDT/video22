@@ -1,11 +1,39 @@
 {
-  "last_organized": "2026-05-06T17:40:52.243048",
-  "total_items": 0,
+  "last_organized": "2026-05-07T10:50:43.360102",
+  "total_items": 17,
   "topics": {
     "fdm_3d_printing": {
-      "count": 0,
-      "platforms": {},
-      "top_items": []
+      "count": 13,
+      "platforms": {
+        "xhs": 13
+      },
+      "top_items": [
+        {
+          "title": "打印偏薄的曲面层纹明显的话可以试一下",
+          "likes": 13000,
+          "platform": "xhs"
+        },
+        {
+          "title": "教你在家用FDM打印光滑无层纹头壳（无打磨）",
+          "likes": 2140,
+          "platform": "xhs"
+        },
+        {
+          "title": "FDM也能实现的木纹打印？",
+          "likes": 1485,
+          "platform": "xhs"
+        },
+        {
+          "title": "3d打印各品牌耗材体验+参数分享",
+          "likes": 1013,
+          "platform": "xhs"
+        },
+        {
+          "title": "3D打印TPU老失败？？码住这条！",
+          "likes": 715,
+          "platform": "xhs"
+        }
+      ]
     },
     "atomic_reshaping": {
       "count": 0,
@@ -13,9 +41,32 @@
       "top_items": []
     },
     "dreame": {
-      "count": 0,
-      "platforms": {},
-      "top_items": []
+      "count": 4,
+      "platforms": {
+        "xhs": 4
+      },
+      "top_items": [
+        {
+          "title": "前追觅某BU负责人 （已离职）AMA",
+          "likes": 1863,
+          "platform": "xhs"
+        },
+        {
+          "title": "追觅被裁亲身经历",
+          "likes": 527,
+          "platform": "xhs"
+        },
+        {
+          "title": "作为追觅前员工，我想说两句",
+          "likes": 259,
+          "platform": "xhs"
+        },
+        {
+          "title": "追觅科技股权与供应链布局拆解",
+          "likes": 209,
+          "platform": "xhs"
+        }
+      ]
     }
   }
 }

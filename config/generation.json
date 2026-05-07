@@ -23,8 +23,7 @@
     "hashtag_count": 5,
     "platforms": {
       "xhs": {"style": "种草分享", "emoji": true},
-      "douyin": {"style": "短平快", "hook_first": true},
-      "weibo": {"style": "话题讨论", "mention_trending": true}
+      "douyin": {"style": "短平快", "hook_first": true}
     }
   }
 }
