@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
 
+sys_path = str(Path(__file__).parent.parent)
+if sys_path not in __import__('sys').path:
+    __import__('sys').path.insert(0, sys_path)
+from utils.retry_utils import RetryConfig, retry_call_async
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -109,18 +114,26 @@ class BaseCollector(ABC):
         keywords = topic.get("keywords", [])
         topic_name = topic.get("name", "")
         rate_limit = self.platform_config.get("rate_limit_seconds", 3)
+        max_retries = self.platform_config.get("max_retries", 3)
+        retry_config = RetryConfig(max_retries=max_retries, initial_delay=2.0)
 
         all_items = []
         for keyword in keywords:
             try:
-                raw_results = await self.search([keyword], limit=limit // len(keywords))
+                # 使用重试机制搜索
+                raw_results = await retry_call_async(
+                    self.search,
+                    [keyword],
+                    limit=limit // len(keywords),
+                    config=retry_config,
+                )
                 for raw in raw_results:
                     item = self.parse_result(raw, topic_name)
                     if item:
                         all_items.append(item)
                 await asyncio.sleep(rate_limit)
             except Exception as e:
-                logger.error(f"Error collecting '{keyword}' from {self.platform_name}: {e}")
+                logger.error(f"Error collecting '{keyword}' from {self.platform_name} after retries: {e}")
 
         seen_urls = set()
         unique_items = []

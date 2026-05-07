@@ -4,8 +4,13 @@ import logging
 import time
 import httpx
 from pathlib import Path
+import sys
 
 from .base_collector import BaseCollector, MaterialItem, BROWSER_DATA_DIR
+sys_path = str(Path(__file__).parent.parent)
+if sys_path not in sys.path:
+    sys.path.insert(0, sys_path)
+from utils.retry_utils import RetryConfig, retry_call_sync
 
 logger = logging.getLogger(__name__)
 
@@ -145,54 +150,66 @@ class XhsCollector(BaseCollector):
         return f"https://www.xiaohongshu.com/{href}"
 
     def _get_detail_by_click(self, item) -> tuple[str, list[str]]:
-        """点击笔记卡片，从弹出的详情面板获取正文和图片"""
-        content = ""
-        images = []
-        try:
-            # 点击笔记卡片
-            item.click()
-            time.sleep(2)
-
-            # 小红书搜索页点击后会弹出右侧详情面板
-            # 获取正文
-            desc_el = (
-                self._page.ele("css:.note-content .desc", timeout=3)
-                or self._page.ele("css:#detail-desc", timeout=2)
-                or self._page.ele("css:[class*='note-text']", timeout=2)
-                or self._page.ele("css:.content [class*='desc']", timeout=2)
-            )
-            if desc_el:
-                content = desc_el.text
-
-            # 获取所有图片
-            img_els = (
-                self._page.eles("css:.note-content img[src*='xhscdn']", timeout=2)
-                or self._page.eles("css:.carousel-container img", timeout=2)
-                or self._page.eles("css:[class*='slide'] img[src*='xhscdn']", timeout=2)
-            )
-            for img in img_els:
-                src = img.attr("src")
-                if src and ("xhscdn" in src or "sns-webpic" in src):
-                    images.append(src)
-
-            # 关闭详情面板（按 ESC 或点击关闭按钮）
-            close_btn = self._page.ele("css:[class*='close']", timeout=1)
-            if close_btn:
-                close_btn.click()
-            else:
-                self._page.actions.key_down("ESCAPE").key_up("ESCAPE")
-            time.sleep(0.5)
-
-        except Exception as e:
-            logger.debug(f"Error getting detail: {e}")
-            # 确保关闭弹窗
+        """点击笔记卡片，从弹出的详情面板获取正文和图片（带重试）"""
+        def _fetch_detail():
+            content = ""
+            images = []
             try:
-                self._page.actions.key_down("ESCAPE").key_up("ESCAPE")
-            except Exception:
-                pass
-            time.sleep(0.5)
+                # 点击笔记卡片
+                item.click()
+                time.sleep(2)
 
-        return content, images
+                # 小红书搜索页点击后会弹出右侧详情面板
+                # 获取正文
+                desc_el = (
+                    self._page.ele("css:.note-content .desc", timeout=3)
+                    or self._page.ele("css:#detail-desc", timeout=2)
+                    or self._page.ele("css:[class*='note-text']", timeout=2)
+                    or self._page.ele("css:.content [class*='desc']", timeout=2)
+                )
+                if desc_el:
+                    content = desc_el.text
+
+                # 获取所有图片
+                img_els = (
+                    self._page.eles("css:.note-content img[src*='xhscdn']", timeout=2)
+                    or self._page.eles("css:.carousel-container img", timeout=2)
+                    or self._page.eles("css:[class*='slide'] img[src*='xhscdn']", timeout=2)
+                )
+                for img in img_els:
+                    src = img.attr("src")
+                    if src and ("xhscdn" in src or "sns-webpic" in src):
+                        images.append(src)
+
+                # 关闭详情面板（按 ESC 或点击关闭按钮）
+                close_btn = self._page.ele("css:[class*='close']", timeout=1)
+                if close_btn:
+                    close_btn.click()
+                else:
+                    self._page.actions.key_down("ESCAPE").key_up("ESCAPE")
+                time.sleep(0.5)
+
+            except Exception as e:
+                logger.debug(f"Error getting detail: {e}")
+                # 确保关闭弹窗
+                try:
+                    self._page.actions.key_down("ESCAPE").key_up("ESCAPE")
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                raise
+
+            return content, images
+
+        # 为详情获取添加重试机制（最多2次重试，延迟较短）
+        try:
+            return retry_call_sync(
+                _fetch_detail,
+                config=RetryConfig(max_retries=2, initial_delay=0.5)
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get detail after retries: {e}")
+            return "", []
 
     def _parse_count(self, text: str) -> int:
         text = text.strip()

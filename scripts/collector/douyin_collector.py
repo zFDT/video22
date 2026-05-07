@@ -3,9 +3,14 @@
 import logging
 import time
 import re
+import sys
 from pathlib import Path
 
 from .base_collector import BaseCollector, MaterialItem, BROWSER_DATA_DIR
+sys_path = str(Path(__file__).parent.parent)
+if sys_path not in sys.path:
+    sys.path.insert(0, sys_path)
+from utils.retry_utils import RetryConfig, retry_call_sync
 
 logger = logging.getLogger(__name__)
 
@@ -151,44 +156,56 @@ class DouyinCollector(BaseCollector):
         return results
 
     def _get_video_detail(self, video_url: str) -> tuple[str, str]:
-        """进入视频详情页获取完整文案和视频源地址"""
-        desc = ""
-        video_src = ""
-        if not video_url:
+        """进入视频详情页获取完整文案和视频源地址（带重试）"""
+        def _fetch_video_detail():
+            desc = ""
+            video_src = ""
+            if not video_url:
+                return desc, video_src
+
+            try:
+                self._page.get(video_url)
+                time.sleep(3)
+                self._check_captcha()
+
+                # 获取视频文案
+                desc_el = (
+                    self._page.ele("css:[data-e2e='video-desc']", timeout=3)
+                    or self._page.ele("css:[class*='desc']", timeout=2)
+                    or self._page.ele("css:.video-info-detail", timeout=2)
+                )
+                if desc_el:
+                    desc = desc_el.text
+
+                # 获取视频源地址（从 video 标签）
+                video_el = self._page.ele("css:video source", timeout=3) or self._page.ele("css:video", timeout=2)
+                if video_el:
+                    video_src = video_el.attr("src") or ""
+
+                # 返回搜索页
+                self._page.back()
+                time.sleep(2)
+
+            except Exception as e:
+                logger.debug(f"Error getting video detail from {video_url}: {e}")
+                try:
+                    self._page.back()
+                    time.sleep(1)
+                except Exception:
+                    pass
+                raise
+
             return desc, video_src
 
+        # 为详情获取添加重试机制
         try:
-            self._page.get(video_url)
-            time.sleep(3)
-            self._check_captcha()
-
-            # 获取视频文案
-            desc_el = (
-                self._page.ele("css:[data-e2e='video-desc']", timeout=3)
-                or self._page.ele("css:[class*='desc']", timeout=2)
-                or self._page.ele("css:.video-info-detail", timeout=2)
+            return retry_call_sync(
+                _fetch_video_detail,
+                config=RetryConfig(max_retries=2, initial_delay=0.5)
             )
-            if desc_el:
-                desc = desc_el.text
-
-            # 获取视频源地址（从 video 标签）
-            video_el = self._page.ele("css:video source", timeout=3) or self._page.ele("css:video", timeout=2)
-            if video_el:
-                video_src = video_el.attr("src") or ""
-
-            # 返回搜索页
-            self._page.back()
-            time.sleep(2)
-
         except Exception as e:
-            logger.debug(f"Error getting video detail from {video_url}: {e}")
-            try:
-                self._page.back()
-                time.sleep(1)
-            except Exception:
-                pass
-
-        return desc, video_src
+            logger.warning(f"Failed to get video detail after retries: {e}")
+            return "", ""
 
     def _extract_video_id(self, url: str) -> str:
         match = re.search(r"/video/(\d+)", url)
