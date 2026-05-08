@@ -1,6 +1,6 @@
 {
-  "last_organized": "2026-05-07T14:27:18.090037",
-  "total_items": 17,
+  "last_organized": "2026-05-08T15:28:01.550580",
+  "total_items": 20,
   "topics": {
     "fdm_3d_printing": {
       "count": 15,
@@ -36,9 +36,9 @@
       ]
     },
     "atomic_reshaping": {
-      "count": 2,
+      "count": 5,
       "platforms": {
-        "xhs": 2
+        "xhs": 5
       },
       "top_items": [
         {
@@ -49,6 +49,21 @@
         {
           "title": "品牌设计师教你省品牌物料成本 （包装篇）",
           "likes": 404,
+          "platform": "xhs"
+        },
+        {
+          "title": "3D打印丨混色还是渐变效果，由你选择！",
+          "likes": 228,
+          "platform": "xhs"
+        },
+        {
+          "title": "影楼、照片发烧友的一款六色高端照片打印机",
+          "likes": 196,
+          "platform": "xhs"
+        },
+        {
+          "title": "个人画室必备👉🏻爱普生打印机l3556",
+          "likes": 108,
           "platform": "xhs"
         }
       ]
