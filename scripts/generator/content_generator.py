@@ -73,15 +73,10 @@ class ContentGenerator:
                 "耗材实测对比：PLA vs PETG vs ABS",
                 "创意作品展示：用3D打印改造生活",
             ],
-            "atomic_reshaping": [
-                "前沿科技：原子重塑技术深度解读",
-                "应用前景：从实验室到量产的距离",
-                "技术对比：传统制造 vs 原子级精度",
-            ],
-            "dreame": [
-                "追觅新品深度评测体验",
-                "追觅 vs 竞品横向对比",
-                "智能清洁方案推荐与使用技巧",
+            "example_topic_2": [
+                "示例话题角度一",
+                "示例话题角度二",
+                "示例话题角度三",
             ],
         }
         return angle_map.get(topic_slug, ["热门话题深度解读"])
