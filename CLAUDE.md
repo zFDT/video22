@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 多平台内容采集与自动化创作工作流。从小红书、抖音采集热门素材，整理分析后用 Claude 生成多平台文案。
 
-话题方向：FDM 3D打印、原子重塑 (AtomForm)、dreame (追觅科技)。
+话题方向：通过 config/topics.json 可配置（默认示例：FDM 3D 打印等）。
 
 ## 环境与运行
 
